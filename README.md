@@ -100,3 +100,21 @@ running tests against another database.
 This starter intentionally does not include Docker, Kubernetes, CI, external
 brokers, an LLM, or a PostgreSQL implementation. Those are deployment and
 student-port concerns rather than part of the local relay protocol.
+
+## CI and local deployment check
+
+`.github/workflows/ci.yml` runs the starter suite and a PostgreSQL row-locking
+integration test before it builds and deploys an image to the `agent-relay-ci`
+kind cluster. Images use the commit SHA, GitHub run ID, and attempt as their
+tag, are loaded into kind before deployment, and the workflow waits for both
+PostgreSQL and the relay rollout to complete.
+
+To run the workflow locally, start Docker Desktop/OrbStack and run:
+
+```bash
+act
+```
+
+The repository's `.actrc` gives the local runner the Docker socket and the
+privileges kind needs. The workflow creates `agent-relay-ci` if it does not
+already exist and keeps it available for inspection after the run.

@@ -1,0 +1,79 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. latest, v1.0.0, or specific SHA)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kind and kubectl
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          architecture="$(uname -m)"
+          case "$architecture" in
+            x86_64) architecture=amd64 ;;
+            aarch64|arm64) architecture=arm64 ;;
+            *) echo "Unsupported architecture: $architecture" >&2; exit 1 ;;
+          esac
+          curl --fail --location --silent --show-error \
+            --output "$HOME/.local/bin/kind" \
+            "https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-$architecture"
+          curl --fail --location --silent --show-error \
+            --output "$HOME/.local/bin/kubectl" \
+            "https://dl.k8s.io/release/v1.33.0/bin/linux/$architecture/kubectl"
+          chmod +x "$HOME/.local/bin/kind" "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Ensure kind cluster is accessible
+        env:
+          KIND_CLUSTER_NAME: agent-relay
+        run: |
+          set -euo pipefail
+          if kind get clusters | grep -Fxq "$KIND_CLUSTER_NAME"; then
+            kind export kubeconfig --name "$KIND_CLUSTER_NAME"
+          else
+            kind create cluster --name "$KIND_CLUSTER_NAME" --wait 120s
+          fi
+          kubectl config use-context "kind-$KIND_CLUSTER_NAME"
+          kubectl cluster-info
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/postgres.yaml
+          kubectl rollout status deployment/postgres --timeout=180s
+          kubectl apply -f k8s/agent-relay.yaml
+
+          # If an explicit tag was provided via workflow_dispatch, update deployment
+          if [ "${{ github.event.inputs.image_tag }}" != "" ] && [ "${{ github.event.inputs.image_tag }}" != "latest" ]; then
+            kubectl set image deployment/agent-relay agent-relay="agent-relay:${{ github.event.inputs.image_tag }}"
+          fi
+
+          kubectl rollout status deployment/agent-relay --timeout=180s
+
+      - name: Verify deployment health
+        run: |
+          set -euo pipefail
+          kubectl get pods,svc,pvc
